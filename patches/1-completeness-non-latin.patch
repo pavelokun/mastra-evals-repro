@@ -1,0 +1,94 @@
+diff --git a/packages/evals/src/scorers/code/completeness/index.test.ts b/packages/evals/src/scorers/code/completeness/index.test.ts
+index dff26307..830e3409 100644
+--- a/packages/evals/src/scorers/code/completeness/index.test.ts
++++ b/packages/evals/src/scorers/code/completeness/index.test.ts
+@@ -99,6 +99,47 @@ describe('CompletenessMetric', () => {
+     });
+   });
+ 
++  describe('text in non-Latin scripts', () => {
++    const score = async (question: string, answer: string) => {
++      const inputMessages = [createTestMessage({ content: question, role: 'user', id: 'test-input' })];
++      const output = [createTestMessage({ content: answer, role: 'assistant', id: 'test-output' })];
++      return scorer.run(createAgentTestRun({ inputMessages, output }));
++    };
++
++    it('should extract elements from Cyrillic text', async () => {
++      const result = await score('Назови столицу и валюту Польши.', 'Столица Польши: Варшава.');
++
++      expect(result.preprocessStepResult?.inputElements).toContain('польши');
++      expect(result.preprocessStepResult?.elementCounts.input).toBeGreaterThan(0);
++      expect(result.score).toBeGreaterThan(0);
++      expect(result.score).toBeLessThan(1);
++    });
++
++    it('should not give a full score to an unrelated answer', async () => {
++      const cyrillic = await score('Назови столицу и валюту Польши.', 'Я люблю черепах.');
++      const japanese = await score('ポーランドの首都と通貨を教えてください。', '私は亀が好きです。');
++      const chinese = await score('波兰的首都和货币是什么？', '我喜欢乌龟。');
++
++      expect(cyrillic.score).toBe(0);
++      expect(japanese.score).toBeLessThan(0.3);
++      expect(chinese.score).toBeLessThan(0.3);
++    });
++
++    it('should give a full score when the answer repeats the question', async () => {
++      for (const text of ['Назови столицу и валюту Польши.', 'ポーランドの首都と通貨を教えてください。']) {
++        const result = await score(text, text);
++        expect(result.score).toBe(1);
++        expect(result.preprocessStepResult?.elementCounts.input).toBeGreaterThan(0);
++      }
++    });
++
++    it('should not drop to zero because a non-Latin answer contains a number', async () => {
++      const result = await score('Назови столицу и валюту Польши.', 'Столица Польши: Варшава, 1 злотый = 100 грошей.');
++
++      expect(result.score).toBeGreaterThan(0);
++    });
++  });
++
+   describe('special cases', () => {
+     it('should handle lists and enumerations', async () => {
+       const inputMessages = [
+diff --git a/packages/evals/src/scorers/code/completeness/index.ts b/packages/evals/src/scorers/code/completeness/index.ts
+index 9e5b5ec4..fb65feb7 100644
+--- a/packages/evals/src/scorers/code/completeness/index.ts
++++ b/packages/evals/src/scorers/code/completeness/index.ts
+@@ -11,6 +11,25 @@ function normalizeString(str: string): string {
+     .toLowerCase();
+ }
+ 
++const wordSegmenter =
++  typeof Intl !== 'undefined' && 'Segmenter' in Intl
++    ? new Intl.Segmenter(undefined, { granularity: 'word' })
++    : undefined;
++
++/**
++ * Splits a token written in a script without spaces between words (Chinese, Japanese, Thai)
++ * into words. ASCII tokens are returned unchanged, so English scores stay the same.
++ */
++function splitUnspacedScript(token: string): string[] {
++  if (!wordSegmenter || /^[a-z0-9]*$/.test(token)) {
++    return [token];
++  }
++
++  return Array.from(wordSegmenter.segment(token))
++    .filter(part => part.isWordLike)
++    .map(part => part.segment);
++}
++
+ function extractElements(doc: any): string[] {
+   // Get more specific elements and ensure they're arrays
+   const nouns = doc.nouns().out('array') || [];
+@@ -26,9 +45,10 @@ function extractElements(doc: any): string[] {
+     // Split on word boundaries and filter out empty strings
+     return normalized
+       .replace(/([a-z])([A-Z])/g, '$1 $2') // Split camelCase
+-      .replace(/[^a-z0-9]+/g, ' ') // Replace non-alphanumeric with spaces
++      .replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ') // Replace everything except letters, marks and digits (any script) with spaces
+       .trim()
+       .split(/\s+/)
++      .flatMap(splitUnspacedScript)
+       .filter(word => word.length > 0);
+   };
+ 

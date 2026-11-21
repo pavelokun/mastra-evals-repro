@@ -1,0 +1,106 @@
+diff --git a/packages/evals/src/scorers/utils.test.ts b/packages/evals/src/scorers/utils.test.ts
+index f3cfabcd..155f4f3f 100644
+--- a/packages/evals/src/scorers/utils.test.ts
++++ b/packages/evals/src/scorers/utils.test.ts
+@@ -1395,6 +1395,22 @@ describe('Scorer Utils', () => {
+         expect(result.outOfOrderSteps).toContain('summarize');
+       });
+ 
++      it('should score one moved step the same wherever it moved from', () => {
++        const names = (list: string[]) => ({ steps: list.map(name => step(name)) });
++        const expected = names(['plan', 'search', 'read', 'summarize', 'reply']);
++
++        const lastStepFirst = compareTrajectories(names(['reply', 'plan', 'search', 'read', 'summarize']), expected);
++        const firstStepLast = compareTrajectories(names(['search', 'read', 'summarize', 'reply', 'plan']), expected);
++
++        // Four of the five expected steps appear in order in both runs
++        expect(lastStepFirst.score).toBe(0.8);
++        expect(lastStepFirst.outOfOrderSteps).toEqual(['reply']);
++        expect(firstStepLast.score).toBe(0.8);
++        expect(firstStepLast.matchedSteps).toBe(4);
++        expect(firstStepLast.outOfOrderSteps).toEqual(['plan']);
++        expect(firstStepLast.missingSteps).toEqual(['plan']);
++      });
++
+       it('should return 0 when actual is empty but expected is not', () => {
+         const result = compareTrajectories({ steps: [] }, { steps: [step('search')] });
+ 
+diff --git a/packages/evals/src/scorers/utils.ts b/packages/evals/src/scorers/utils.ts
+index 926e9e84..15badb47 100644
+--- a/packages/evals/src/scorers/utils.ts
++++ b/packages/evals/src/scorers/utils.ts
+@@ -1254,43 +1254,41 @@ function compareRelaxedOrder(
+   const actualNames: string[] = actual.steps.map((s: TrajectoryStep) => s.name);
+   const expectedNames: string[] = expected.steps.map((s: ExpectedStep) => s.name);
+ 
+-  // Relaxed: expected steps must appear in order but extra steps are allowed
+-  let matchedSteps = 0;
+-  let lastMatchedIndex = -1;
+-  const outOfOrderSteps: string[] = [];
+-  const matchedExpectedIndices = new Set<number>();
+-
+-  for (let i = 0; i < expectedNames.length; i++) {
+-    const expectedName = expectedNames[i];
+-    let found = false;
+-
+-    for (let j = lastMatchedIndex + 1; j < actualNames.length; j++) {
+-      if (actualNames[j] === expectedName) {
+-        if (actual.steps[j] && expected.steps[i]) {
+-          if (expectedStepMatches(actual.steps[j]!, expected.steps[i]!)) {
+-            matchedSteps++;
+-            lastMatchedIndex = j;
+-            matchedExpectedIndices.add(i);
+-            found = true;
+-            break;
+-          }
+-        } else {
+-          matchedSteps++;
+-          lastMatchedIndex = j;
+-          matchedExpectedIndices.add(i);
+-          found = true;
+-          break;
+-        }
+-      }
++  // Relaxed: expected steps must appear in order but extra steps are allowed.
++  // Match the largest set of expected steps that appears in order (longest common subsequence).
++  // Taking the first occurrence of each expected step in turn is not enough: one early step that
++  // the agent ran late would consume the rest of the trajectory and leave every later step unmatched.
++  const expectedCount = expected.steps.length;
++  const actualCount = actual.steps.length;
++  const stepsMatch = (i: number, j: number) => expectedStepMatches(actual.steps[j]!, expected.steps[i]!);
++
++  // best[i][j] = most expected steps from index i on that match, in order, actual steps from index j on
++  const best: number[][] = Array.from({ length: expectedCount + 1 }, () => new Array<number>(actualCount + 1).fill(0));
++  for (let i = expectedCount - 1; i >= 0; i--) {
++    for (let j = actualCount - 1; j >= 0; j--) {
++      best[i]![j] = Math.max(best[i + 1]![j]!, best[i]![j + 1]!, stepsMatch(i, j) ? best[i + 1]![j + 1]! + 1 : 0);
+     }
++  }
+ 
+-    if (!found) {
+-      // Check if the step exists but is out of order
+-      if (actualNames.includes(expectedName!)) {
+-        outOfOrderSteps.push(expectedName!);
+-      }
++  // Walk forward through one best matching, preferring earlier expected steps on ties
++  const matchedExpectedIndices = new Set<number>();
++  for (let i = 0, j = 0; i < expectedCount && j < actualCount;) {
++    if (stepsMatch(i, j) && best[i]![j] === best[i + 1]![j + 1]! + 1) {
++      matchedExpectedIndices.add(i);
++      i++;
++      j++;
++    } else if (best[i]![j + 1] === best[i]![j]) {
++      j++;
++    } else {
++      i++;
+     }
+   }
++  const matchedSteps = matchedExpectedIndices.size;
++
++  // Unmatched expected steps that do occur in the actual trajectory are out of order
++  const outOfOrderSteps = expectedNames.filter(
++    (name, i) => !matchedExpectedIndices.has(i) && actualNames.includes(name),
++  );
+ 
+   // Missing steps = expected steps that were not matched (by name + stepType + data, not just name)
+   const missingSteps = expectedNames.filter((_, i) => !matchedExpectedIndices.has(i));

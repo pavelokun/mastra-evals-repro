@@ -1,0 +1,15 @@
+{
+  "name": "mastra-evals-repro",
+  "private": true,
+  "type": "module",
+  "description": "Minimal reproductions for three bugs in @mastra/evals prebuilt code scorers",
+  "scripts": {
+    "completeness": "node completeness.mjs",
+    "trajectory": "node trajectory.mjs",
+    "textual-difference": "node textual-difference.mjs"
+  },
+  "dependencies": {
+    "@mastra/core": "1.85.0",
+    "@mastra/evals": "1.10.11"
+  }
+}

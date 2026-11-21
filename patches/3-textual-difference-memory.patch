@@ -1,0 +1,64 @@
+diff --git a/packages/evals/src/scorers/code/textual-difference/index.test.ts b/packages/evals/src/scorers/code/textual-difference/index.test.ts
+index a5619615..4bc5f6ff 100644
+--- a/packages/evals/src/scorers/code/textual-difference/index.test.ts
++++ b/packages/evals/src/scorers/code/textual-difference/index.test.ts
+@@ -117,6 +117,17 @@ describe('TextualDifferenceMetric', () => {
+     expect(result.preprocessStepResult?.changes).toBeGreaterThan(0);
+   });
+ 
++  it('should score long texts', async () => {
++    const original = 'lorem ipsum dolor sit amet '.repeat(600);
++    const changed = original.replace(/o/g, '0');
++    const inputMessages = [createTestMessage({ content: original, role: 'user', id: 'test-input' })];
++    const output = [createTestMessage({ content: changed, role: 'assistant', id: 'test-output' })];
++
++    const result = await scorer.run(createAgentTestRun({ inputMessages, output }));
++    // 3 of every 27 characters change, so 24/27 of each text is common
++    expect(result.score).toBeCloseTo(24 / 27, 5);
++  });
++
+   it('should include difference details in result', async () => {
+     const inputMessages = [createTestMessage({ content: 'The quick brown fox', role: 'user', id: 'test-input' })];
+     const output = [createTestMessage({ content: 'The quick brown fox', role: 'assistant', id: 'test-output' })];
+diff --git a/packages/evals/src/scorers/code/textual-difference/index.ts b/packages/evals/src/scorers/code/textual-difference/index.ts
+index e59cd49e..5f592c0c 100644
+--- a/packages/evals/src/scorers/code/textual-difference/index.ts
++++ b/packages/evals/src/scorers/code/textual-difference/index.ts
+@@ -27,27 +27,25 @@ function calculateRatio(input: string, output: string): number {
+ function longestCommonSubsequence(str1: string, str2: string): number {
+   const m = str1.length;
+   const n = str2.length;
+-  const dp: number[][] = [];
+ 
+-  // Initialize DP table
+-  for (let i = 0; i <= m; i++) {
+-    dp[i] = [];
+-    for (let j = 0; j <= n; j++) {
+-      dp[i]![j] = 0;
+-    }
+-  }
++  // Only the previous row is needed for the length, so keep two rows instead of the full
++  // (m + 1) x (n + 1) table. Memory stays linear for long agent outputs.
++  let previous = new Uint32Array(n + 1);
++  let current = new Uint32Array(n + 1);
+ 
+   for (let i = 1; i <= m; i++) {
++    const char = str1.charCodeAt(i - 1);
+     for (let j = 1; j <= n; j++) {
+-      if (str1[i - 1] === str2[j - 1]) {
+-        dp[i]![j] = dp[i - 1]![j - 1]! + 1;
++      if (char === str2.charCodeAt(j - 1)) {
++        current[j] = previous[j - 1]! + 1;
+       } else {
+-        dp[i]![j] = Math.max(dp[i - 1]![j]!, dp[i]![j - 1]!);
++        current[j] = Math.max(previous[j]!, current[j - 1]!);
+       }
+     }
++    [previous, current] = [current, previous];
+   }
+ 
+-  return dp[m]![n]!;
++  return previous[n]!;
+ }
+ 
+ /**
